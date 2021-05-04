@@ -11,49 +11,51 @@ GetAllGenusSpecies <- function(x) {
 }
 
 GetTreeWithNameProcessing <- function(treefile) {
-  raw <- readLines(treefile)
-  raw <- gsub(" CSM", "", raw)
-  raw <- gsub(" ", "_", raw)
-  phy <- ape::read.tree(text=raw)
+  phy <- read.nexus(treefile)
   phy$tip.label <- unname(GetAllGenusSpecies(phy$tip.label))
-  phy <- root(phy, outgroup = "Notharctus tenebrosus")
-  phy$edge.length = phy$edge
+  phy$tip.label <- make.unique(phy$tip.label)
   phy <- multi2di(phy)
+  phy$edge.length[phy$edge.length==0]<-1e-16
   return(phy)
 }
 
 #############################################################
 # Import data and remove blank values of column of interest #
 #############################################################
-DataImport <- function(x, CleanColumn = NA){
-  import <- read.csv(x, strip.white=TRUE)
-  x <- import[!(import[,CleanColumn] ==""),]
-  y <- unite(x, GenusSpecies, c(1:2), sep=" ", remove=FALSE)
-  row.names(y) <- y$GenusSpecies
-  return(y)
+
+find_unique <-  function(diet_data){
+  x <- unique(diet_data)
+  return(x)
+} 
+
+clean_up_diet <- function(unique_data){
+  unique_data$diet_binary <- ifelse(unique_data$diet == "insectivore, omnivore" | unique_data$diet == "insectivore, herbivore" |
+                                      unique_data$diet == "insectivore, frugivore" | unique_data$diet =="insectivore, carnivore" |
+                                      unique_data$diet == "insectivore" | unique_data$diet == "omnivore", 1, 0)
+  #rownames(unique_data) <- unique_data[, "GenusSpecies"]
+  return(unique_data)
 }
 
-#For continuous data
-ContinData <- function(dataimport){
-  con <- subset(dataimport, select = c(11))
-  con[,1] <- as.numeric(as.character(con[,1]))
-  return(con)
+DataImport <- function(data1, data2, col1="", col2="", CleanColumn = ""){
+  import1 <- read.csv(data1, strip.white=TRUE) # Import continuous data
+  import2 <- read.csv(data2, strip.white=TRUE) # Import discrete data
+  subset <- import2[,c(col1, col2)] # Subset discrete data
+  UniqueIm2 <- find_unique(subset)
+  CleanIm2 <- clean_up_diet(UniqueIm2)
+  x <- import1[!(import1[,CleanColumn] ==""),]
+  y <- unite(x, GenusSpecies, c(1:2), sep=" ", remove=FALSE) # Merge genus and species name into one col of continuous data
+  merge <- CleanIm2 %>% inner_join(., y, by = col1)
+  row.names(merge) <- merge$GenusSpecies
+  return(merge)
 }
 
-#Ford disctrete data
-DiscData <- function(dataimport){
-  disc <- subset(dataimport, select = c(5))
-  return(disc)
-}
 
 ##############################
 # Combine Tree and Dataframe #
 ##############################
 CleanData <- function(phy, data) {
-  DNIT <- geiger::name.check(phy, data)
-  newphy <- geiger::drop.tip(phy, tip = DNIT$tree_not_data)
-  #clean <- geiger::treedata(phy, data, warnings=TRUE)
-  return(n)
+  clean <- geiger::treedata(phy, data, sort = TRUE, warnings=TRUE)
+  return(clean)
 }
 
 ################
@@ -86,7 +88,7 @@ EvoMod <- function(datatree){
   aic.vals <-setNames(c(BM1$opt$aicc,
                         OU$opt$aicc,
                         EB$opt$aicc),
-                      c("Browning Motion",
+                      c("Brownian Motion",
                         "Ornstein-Uhlenbeck",
                         "Early-Bust"))
   table <- aic.w(aic.vals)
@@ -94,7 +96,7 @@ EvoMod <- function(datatree){
 }
 
 BestMod <- function(mods){
-  if(names(which.max(mods$table)) == "Browning Motion"){
+  if(names(which.max(mods$table)) == "Brownian Motion"){
     print(paste0("The best model is ", names(which.max(mods$table)), " with its weighted aic value of ", max(mods$table), ". This model has an evolution rate of ", mods$BM$opt$sigsq, "."))
   } else if(names(which.max(mods$table)) == "Ornstein-Uhlenbeck"){print(paste0("The best model is ", names(which.max(mods$table)), " with its weighted aic value of ", max(mods$table), ". This model has an evolution rate of ", mods$OU$opt$sigsq, "."))
   } else if(names(which.max(mods$table)) == "Early-Bust"){print(paste0("The best model is ", names(which.max(mods$table)), " with its weighted aic value of ", max(mods$table), ". This model has an evolution rate of ", mods$EB$opt$sigsq, "."))
@@ -104,21 +106,45 @@ BestMod <- function(mods){
 TreeCompare <- function(datatree, mods){
   par(mfcol = (c(1,2)))
   plot(datatree$phy, show.tip.label=FALSE, main = "Original")
-  if(names(which.max(mods$table)) == "Browning Motion"){
-    bm.tree <- rescale(datatree$phy, model="BM")
-    plot(ou.tree,show.tip.label=FALSE, main = "Browning Motion")
-    } else if(names(which.max(mods$table)) == "Ornstein-Uhlenbeck"){
-      ou.tree <- rescale(datatree$phy, model="OU", alpha = mods$OU$opt$alpha)
-      plot(ou.tree, show.tip.label=FALSE, main = "Ornstein-Uhlenbeck")
-      } else if(names(which.max(mods$table)) == "Early-Bust"){
-        eb.tree <- rescale(datatree$phy, model="EB", alpha = mods$EB$opt$alpha)
-        plot(ou.tree, show.tip.label=FALSE, main = "Early-Bust")
-        }
+  if(names(which.max(mods$table)) == "Brownian Motion"){
+    transformed.tree <- geiger::rescale(datatree$phy, model="BM", sigsq = mods$BM$opt$sigsq)
+  } else if(names(which.max(mods$table)) == "Ornstein-Uhlenbeck"){
+    transformed.tree <- geiger::rescale(datatree$phy, model="OU", alpha = mods$OU$opt$alpha)
+  } else if(names(which.max(mods$table)) == "Early-Bust"){
+    transformed.tree <- geiger::rescale(datatree$phy, model="EB", a = mods$EB$opt$a)
   }
+  plot(transformed.tree, show.tip.label=FALSE, main = names(which.max(mods$table)))
+}
 
-
-
-
-
-
+##################
+# OUwie Analysis #
+##################
+RegimeAssignment <- function(discdatatree, datatree){
+  #label tree with best states
+  reconstruction.info <- ace(discdatatree$data, datatree$phy, type="discrete", method="ML", CI=TRUE)
+  best.states <- colnames(reconstruction.info$lik.anc)[apply(reconstruction.info$lik.anc, 1, which.max)]
+  labeledtree <- datatree$phy
+  labeledtree$node.label <- best.states
+  
+  #Continued analysis
+  data <- as.data.frame(discdatatree$data)
+  names<- as.data.frame(tibble::rownames_to_column(data, "SPECIES"))
+  colnames(names)[2] <- "Species"
+  regime = as.data.frame(datatree$data)
+  names2<- as.data.frame(tibble::rownames_to_column(regime, "SPECIES"))
+  colnames(names2)[2] <- "Species"
+  temp2 <- data.frame("species"= names[,1], "regime"=names[,2],
+                      "continuous"=names2[,2])
+  return(list("temp2" = temp2, "labeledtree" = labeledtree))
+}
+ # I wanted to place this in my plan, but drake kept skipping it and 
+                                                           # moving to the next step, which caused a fault.
+AllOuwie <- function(phy, model, data){
+  results <- lapply(model, OUwie, phy = phy, data = data)
+  AICc.values<-sapply(results, "[[", "AICc")
+  names(AICc.values)<-model
+  AICc.values<-AICc.values-min(AICc.values)
+  best<-results[[which.min(AICc.values)]] #store for later
+  return(list("AIC_values" = AICc.values, "best" = best)) #prints info on best model
+}
 
